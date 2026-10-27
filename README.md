@@ -140,8 +140,232 @@ curl "http://localhost:8080/search-asset?assetName=Alpha-Asset-100"
 
 ---
 
+## Test scenario: Neo4j outage and Grafana alert
+
+This is the main validation use case for the observability setup.
+
+### Goal
+
+Manually stop Neo4j, call the inventory API, and confirm that the application raises a clear error in logs and Grafana alerts on that failure.
+
+### Steps
+
+1. Start the stack:
+
+```bash
+docker compose up --build -d
+```
+
+2. Confirm the services are running:
+
+```bash
+docker compose ps
+```
+
+3. Stop Neo4j:
+
+```bash
+docker compose stop neo4j
+```
+
+4. Trigger a request that hits the database:
+
+```bash
+curl "http://localhost:8080/search-asset?assetName=test"
+```
+
+or
+
+```bash
+curl -X POST http://localhost:8080/create-asset \
+  -H "Content-Type: application/json" \
+  -d '{
+    "assetName": "test-asset",
+    "assetType": "APPLICATION",
+    "environment": "DEV"
+  }'
+```
+
+5. Open Grafana at `http://localhost:3001`.
+
+6. Go to Explore and select the Loki datasource.
+
+7. Run a query such as:
+
+```logql
+{application="usm-inventory"} |= "NEO4J_UNAVAILABLE"
+```
+
+You should see the Neo4j error log message in Loki.
+
+### Alert rule
+
+Use the following Loki query to create a Grafana alert:
+
+```logql
+count_over_time({application="usm-inventory"} |= "NEO4J_UNAVAILABLE" [5m]) > 0
+```
+
+Alert settings:
+
+- Condition: `WHEN last() OF query(A) IS ABOVE 0`
+- Evaluate every: `1m`
+- For: `1m`
+
+This means Grafana will trigger an alert whenever the application logs a Neo4j outage event in the last 5 minutes.
+
+### Restart Neo4j
+
+Once you finish testing, restart the database:
+
+```bash
+docker compose start neo4j
+```
+
+---
+
+## Monitoring use cases to validate
+
+The following scenarios are the recommended validation steps for this project.
+
+### Use Case 1 — Log-based troubleshooting
+
+Scenario:
+
+- Service2 fails to connect to PostgreSQL.
+- The developer searches application logs to identify the exception and root cause.
+
+In this project, the equivalent test is a Neo4j outage.
+
+Steps:
+
+1. Start the stack:
+
+```bash
+docker compose up --build -d
+```
+
+2. Stop Neo4j:
+
+```bash
+docker compose stop neo4j
+```
+
+3. Trigger a DB-dependent request:
+
+```bash
+curl "http://localhost:8080/search-asset?assetName=test"
+```
+
+4. Open Grafana at `http://localhost:3001`.
+
+5. Go to Explore → Loki and run:
+
+```logql
+{application="usm-inventory"} |= "NEO4J_UNAVAILABLE"
+```
+
+Expected result:
+
+- The failed database request appears in logs.
+- The log clearly identifies a Neo4j connection failure.
+
+Tool used:
+
+- Docker logs or Grafana Loki
+
+---
+
+### Use Case 2 — Metrics-based incident detection
+
+Scenario:
+
+- Service1 HTTP 500 error rate exceeds a threshold.
+- The developer investigates Grafana dashboards to identify when the issue started and which service is affected.
+
+Steps:
+
+1. Start the stack:
+
+```bash
+docker compose up --build -d
+```
+
+2. Trigger application traffic:
+
+```bash
+curl "http://localhost:8081/usm-agent"
+```
+
+3. Open Grafana at `http://localhost:3001`.
+
+4. Go to Explore → Prometheus and run:
+
+```promql
+sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+```
+
+5. To view by service:
+
+```promql
+sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+```
+
+Expected result:
+
+- A spike in HTTP 5xx requests appears in the query output.
+- The developer can identify when the incident started and which service was affected.
+
+Tools used:
+
+- Prometheus + Grafana
+
+---
+
+### Use Case 3 — Distributed-trace root-cause analysis
+
+Scenario:
+
+- Service1 returns errors.
+- The developer discovers through a distributed trace that Service2 or its database call is the source of the failure.
+
+In this project, the equivalent trace backend is Tempo, which is configured through Grafana.
+
+Steps:
+
+1. Start the stack:
+
+```bash
+docker compose up --build -d
+```
+
+2. Trigger a request through the service chain:
+
+```bash
+curl "http://localhost:8081/usm-agent"
+```
+
+3. Open Grafana at `http://localhost:3001`.
+
+4. Go to Explore → Tempo.
+
+5. Search traces by service or trace ID, then inspect the service flow.
+
+Expected result:
+
+- The trace shows the call chain between the agent and the inventory service.
+- If the Neo4j call fails, the downstream error path is visible in the trace.
+
+Tools used:
+
+- OpenTelemetry + Tempo (Grafana trace view)
+
+---
+
 ## Notes
 
 - Neo4j credentials used in Docker are `neo4j / neo4j@123`.
 - The app uses Docker networking internally, so the services can communicate with each other without manual change to the code.
 - This project is designed to showcase microservice communication and observability patterns in a simple local environment.
+- The Neo4j outage test is a realistic failure scenario for validating Loki-based Grafana alerting.
+- For trace-based analysis, Tempo is used in this stack instead of Jaeger.
