@@ -1,0 +1,3 @@
+com\poc\observability\metrics\AssetServiceTest.class
+com\poc\observability\metrics\AssetControllerIntegrationTest.class
+com\poc\observability\metrics\MetricsMonitoringApplicationTests.class

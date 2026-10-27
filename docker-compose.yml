@@ -1,0 +1,98 @@
+services:
+  neo4j:
+    image: neo4j:5.20
+    container_name: usm-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/neo4j@123
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+  tempo:
+    image: grafana/tempo:2.2.2
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./docker/tempo/tempo.yml:/etc/tempo.yaml:ro
+      - ./docker/tempo/tempo-data:/tmp/tempo
+    ports:
+      - "3200:3200"
+      - "9411:9411"
+
+  loki:
+    image: grafana/loki:main
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"
+
+  usm-inventory:
+    build:
+      context: .
+      dockerfile: usm-invnetory/Dockerfile
+    container_name: usm-inventory
+    restart: unless-stopped
+    depends_on:
+      - neo4j
+      - loki
+      - tempo
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_PORT: 8080
+      SPRING_NEO4J_URI: bolt://neo4j:7687
+      SPRING_NEO4J_AUTHENTICATION_USERNAME: neo4j
+      SPRING_NEO4J_AUTHENTICATION_PASSWORD: neo4j@123
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,prometheus,info
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://tempo:9411/api/v2/spans
+
+  usm-agent:
+    build:
+      context: .
+      dockerfile: usm-agent/Dockerfile
+    container_name: usm-agent
+    restart: unless-stopped
+    depends_on:
+      - usm-inventory
+      - loki
+      - tempo
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: 8081
+      ASSET_SEARCH_URL: http://usm-inventory:8080/search-asset
+      ASSET_CREATE_URL: http://usm-inventory:8080/create-asset
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,prometheus,info
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://tempo:9411/api/v2/spans
+
+  prometheus:
+    image: prom/prometheus:v2.46.0
+    command:
+      - --enable-feature=exemplar-storage
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    volumes:
+      - ./docker/grafana:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    ports:
+      - "3001:3000"
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
